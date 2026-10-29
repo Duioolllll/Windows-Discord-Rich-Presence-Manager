@@ -1,0 +1,60 @@
+{
+  "name": "autopresence",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Privacy-first Discord activity detection for Windows",
+  "main": "dist-js/main.js",
+  "scripts": {
+    "build": "tsc && node scripts/copy-ui.cjs && node extension/build.mjs",
+    "test": "vitest run",
+    "start": "electron .",
+    "package:win": "pnpm build && electron-builder --win nsis portable --x64"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "build": {
+    "appId": "io.autopresence.app",
+    "productName": "AutoPresence",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "dist-js/**/*",
+      "extension/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "AutoPresence-Setup-x64.${ext}"
+    },
+    "asarUnpack": [
+      "dist-js/native/**"
+    ],
+    "extraResources": [
+      {
+        "from": "src/native/register.ps1",
+        "to": "native/register.ps1"
+      },
+      {
+        "from": "src/native/unregister.ps1",
+        "to": "native/unregister.ps1"
+      }
+    ],
+    "portable": {
+      "artifactName": "AutoPresence-Portable-x64.${ext}"
+    }
+  }
+}

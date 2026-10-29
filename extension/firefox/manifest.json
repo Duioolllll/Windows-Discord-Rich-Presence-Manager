@@ -1,0 +1,12 @@
+{
+  "manifest_version": 2,
+  "name": "AutoPresence",
+  "version": "0.1.0",
+  "description": "Share the active site's domain with AutoPresence on this computer.",
+  "permissions": ["tabs", "storage", "nativeMessaging"],
+  "optional_permissions": ["https://*.youtube.com/*"],
+  "background": { "scripts": ["background.js"] },
+  "browser_action": { "default_popup": "popup.html" },
+  "browser_specific_settings": { "gecko": { "id": "autopresence@local.invalid", "strict_min_version": "109.0" } },
+  "incognito": "not_allowed"
+}

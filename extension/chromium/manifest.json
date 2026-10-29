@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "AutoPresence",
+  "version": "0.1.0",
+  "description": "Share the active site's domain with AutoPresence on this computer.",
+  "permissions": ["tabs", "storage", "nativeMessaging", "scripting"],
+  "optional_host_permissions": ["https://*.youtube.com/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html" },
+  "incognito": "not_allowed"
+}
