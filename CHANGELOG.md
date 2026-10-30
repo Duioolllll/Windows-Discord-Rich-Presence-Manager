@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- Show locally extracted Windows system icons for running applications in the application list and local activity preview.
+- Keep local icons and executable paths out of Discord RPC; Discord continues to use its existing image references.
+- Actual Windows icon extraction and display remain unverified.
+
 ## 0.3.0
 
 - Track running desktop applications, preferring the active window and keeping a running selection when focus moves to an excluded app.

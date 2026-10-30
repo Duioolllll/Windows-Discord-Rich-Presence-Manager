@@ -151,3 +151,53 @@ describe('running apps and browser status', () => {
     dom.window.close();
   });
 });
+
+describe('local system icons', () => {
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a0QAAAAASUVORK5CYII=';
+  it('shows local PNG icons in the running list and activity preview while keeping names text-only', async () => {
+    const app = await launch({ ...initial, onboardingComplete: true });
+    const { document: d, dom } = app;
+    app.update({
+      runningApps: [{ name: '<Editor>', icon: png }, { name: 'No icon', icon: null }],
+      activity: { application: 'Editor', details: 'Running', confidence: 'generic' },
+      activityIcon: png,
+    });
+    const list = d.querySelector('#apps-list');
+    expect(list.querySelectorAll('li').length).toBe(2);
+    expect(list.querySelector('li span').textContent).toBe('<Editor>');
+    expect(list.querySelector('editor')).toBeNull();
+    expect(list.querySelector('img').getAttribute('src')).toBe(png);
+    expect(list.querySelector('img').getAttribute('alt')).toBe('');
+    expect(d.querySelector('#preview-icon img').getAttribute('src')).toBe(png);
+    expect(d.querySelector('#preview-name').textContent).toBe('Editor');
+    app.update({ activity: null, activityIcon: png, runningApps: [] });
+    expect(d.querySelector('#preview-icon img')).toBeNull();
+    expect(d.querySelector('#preview-icon').textContent).toBe('◫');
+    expect(list.querySelector('li').textContent).toBe('No running applications detected.');
+    dom.window.close();
+  });
+
+  it('does not load remote, SVG, malformed or oversized icon data and falls back on decode errors', async () => {
+    const app = await launch({ ...initial, onboardingComplete: true });
+    const { document: d, dom } = app;
+    for (const bad of [
+      'https://example.com/icon.png',
+      'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=',
+      'data:image/png;base64,PHN2Zz48L3N2Zz4=',
+      png + '<script>',
+      'data:image/png;base64,' + 'A'.repeat(350004),
+    ]) {
+      app.update({ runningApps: [{ name: 'App', icon: bad }], activity: { application: 'App', details: 'Running' }, activityIcon: bad });
+      expect(d.querySelector('#apps-list img')).toBeNull();
+      expect(d.querySelector('#preview-icon img')).toBeNull();
+      expect(d.querySelector('#preview-icon').textContent).toBe('◫');
+    }
+    app.update({ runningApps: [{ name: 'App', icon: png }], activity: { application: 'App', details: 'Running' }, activityIcon: png });
+    d.querySelector('#preview-icon img').dispatchEvent(new dom.window.Event('error'));
+    d.querySelector('#apps-list img').dispatchEvent(new dom.window.Event('error'));
+    expect(d.querySelector('#preview-icon').textContent).toBe('◫');
+    expect(d.querySelector('#apps-list img')).toBeNull();
+    expect(d.querySelector('#apps-list li').textContent).toBe('App');
+    dom.window.close();
+  });
+});

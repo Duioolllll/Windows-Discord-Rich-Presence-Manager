@@ -62,6 +62,43 @@
     if (!silent) notice('Settings saved.');
   }
   function present(value, connected, disconnected) { return t(value === true ? connected : value === false ? disconnected : 'Not verified'); }
+  // Accept only bounded PNG data URLs with a valid signature and IHDR dimensions.
+  // Never load local paths, remote URLs, SVG, or arbitrary data in an image element.
+  function isPngIcon(value) {
+    if (typeof value !== 'string' || value.length > 350000) return false;
+    const prefix = 'data:image/png;base64,';
+    if (!value.startsWith(prefix)) return false;
+    const data = value.slice(prefix.length);
+    if (data.length < 32 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return false;
+    try {
+      const head = atob(data.slice(0, 32));
+      const bytes = Array.from(head, c => c.charCodeAt(0));
+      if (![137, 80, 78, 71, 13, 10, 26, 10].every((v, i) => bytes[i] === v)) return false;
+      if (bytes[8] !== 0 || bytes[9] !== 0 || bytes[10] !== 0 || bytes[11] !== 13 ||
+          bytes[12] !== 73 || bytes[13] !== 72 || bytes[14] !== 68 || bytes[15] !== 82) return false;
+      const integer = (offset) => ((bytes[offset] * 0x1000000) + (bytes[offset + 1] << 16) + (bytes[offset + 2] << 8) + bytes[offset + 3]);
+      const width = integer(16), height = integer(20);
+      return width > 0 && width <= 512 && height > 0 && height <= 512;
+    } catch { return false; }
+  }
+  function iconImage(value, className) {
+    if (!isPngIcon(value)) return null;
+    const image = document.createElement('img');
+    image.className = className;
+    image.alt = '';
+    image.setAttribute('aria-hidden', 'true');
+    image.src = value;
+    return image;
+  }
+  function renderPreviewIcon(activity) {
+    const container = $('#preview-icon');
+    const image = activity && iconImage(state.activityIcon, 'preview-app-icon');
+    container.replaceChildren();
+    if (image) {
+      image.addEventListener('error', () => { if (image.parentNode === container) container.textContent = '◫'; }, { once: true });
+      container.append(image);
+    } else container.textContent = '◫';
+  }
   function renderStatus() {
     const paused = state.paused === true;
     const pill = $('#status-pill');
@@ -71,6 +108,7 @@
     $('#pause-button').disabled = !api || typeof api.pause !== 'function' || typeof state.paused !== 'boolean';
     $('#quit-button').disabled = !api || typeof api.quit !== 'function';
     const activity = state.activity && typeof state.activity === 'object' ? state.activity : null;
+    renderPreviewIcon(activity);
     const application = activity && typeof activity.application === 'string' ? activity.application : t('Waiting for activity');
     const details = activity && typeof activity.details === 'string' ? activity.details : t('No activity is currently available.');
     text('#activity-name', application);
@@ -113,11 +151,17 @@
   }
   function renderApps() {
     const list = $('#apps-list'); list.replaceChildren();
-    const apps = Array.isArray(state.detectedApps) ? state.detectedApps : [];
-    // Only names provided as strings are used; do not display process metadata or paths.
-    const names = apps.filter((name) => typeof name === 'string' && !/[\\/]/.test(name)).slice(0, 100);
-    if (!names.length) { const li = document.createElement('li'); li.className = 'empty'; li.textContent = t('No running applications detected.'); list.append(li); }
-    for (const name of names) { const li = document.createElement('li'); li.textContent = name; list.append(li); }
+    const apps = Array.isArray(state.runningApps) ? state.runningApps :
+      (Array.isArray(state.detectedApps) ? state.detectedApps.map(name => ({ name, icon: null })) : []);
+    // The main process supplies names and local PNG data only; never display paths.
+    const safeApps = apps.filter((app) => app && typeof app.name === 'string' && app.name.length > 0 && app.name.length <= 255 && !/[\\/]/.test(app.name)).slice(0, 100);
+    if (!safeApps.length) { const li = document.createElement('li'); li.className = 'empty'; li.textContent = t('No running applications detected.'); list.append(li); }
+    for (const app of safeApps) {
+      const li = document.createElement('li'); li.className = 'running-app';
+      const image = iconImage(app.icon, 'running-app-icon');
+      if (image) { image.addEventListener('error', () => image.remove(), { once: true }); li.append(image); }
+      const name = document.createElement('span'); name.textContent = app.name; li.append(name); list.append(li);
+    }
   }
   function renderTagList(selector, field) {
     const list = $(selector); list.replaceChildren();

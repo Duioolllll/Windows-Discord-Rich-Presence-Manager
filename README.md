@@ -18,6 +18,12 @@ The detector lists processes with visible top-level windows in the current sessi
 
 Browser and website detection is temporarily disabled: the application does not start its Native Messaging server and does not use browser signals. The extension source is retained for future work but is not included in this package. If you installed a previous browser extension, disable or uninstall it separately; the desktop app cannot turn it off for you.
 
+## Local system icons
+
+The Applications list and local activity preview display the Windows executable's system icon when it can be obtained safely. Extraction occurs locally; executable paths and icon data are not sent to Discord. An icon is omitted when the process identity cannot be verified or access is denied, or the executable is on a network or removable drive. Windows icon extraction and display have not yet been tested on an actual Windows desktop.
+
+The local preview icon can differ from the Discord image. Discord continues to use the configured asset key or publicly accessible image URL described below.
+
 ## Discord names and images
 
 The app sends the detected name in the RPC activity `name` field and an image reference in `assets.large_image`. Some common apps (Visual Studio Code, Figma, Notion, Spotify, Steam) use public PNG logos from GitHub's `github/explore` repository, pinned to a specific commit. Other apps use text only unless you add an Activity Rule with a display name and either an image asset key registered to your Discord application or a public HTTPS image URL. Discord retrieves external images; do not use URLs containing private information. URLs with credentials, queries, fragments, local hostnames or IP addresses are rejected.

@@ -5,6 +5,7 @@ import { ActivityEngine, applyRules, eligibleProcesses, runningActivity, selectR
 import { ForegroundMonitor, type ForegroundObservation } from './windows/foreground';
 import { DiscordPresence, type DiscordStatus } from './discord';
 import { RunningProcessMonitor, type RunningProcess } from './windows/running';
+import { ProcessIconProvider } from './windows/icon';
 import { DEFAULT_SETTINGS, cleanSettings, restoreSettings, type Settings } from './settings';
 
 let settings: Settings = { ...DEFAULT_SETTINGS }, paused = false, quitting = false;
@@ -12,6 +13,11 @@ let window: BrowserWindow | null = null, tray: Tray | null = null, monitor: Fore
 let discordStatus: DiscordStatus = 'stopped', foreground: ForegroundObservation | null = null, activity: Activity | null = null;
 let runningProcesses: RunningProcess[] | null = null;
 let selectedPid: number | null = null;
+const iconProvider = new ProcessIconProvider();
+const iconResults = new Map<string, {value: string | null; expires: number}>();
+const iconPending = new Set<string>();
+let iconGeneration = 0;
+const iconKey = (item: RunningProcess) => JSON.stringify([item.processId, item.startedAt, item.processName]);
 const engine = new ActivityEngine(1000);
 const events: string[] = [];
 let timer: NodeJS.Timeout | null = null, monitorRetry: NodeJS.Timeout | null = null;
@@ -19,10 +25,43 @@ let shutdownStarted = false, shutdownComplete = false;
 
 function state() {
   const visible = eligibleProcesses(runningProcesses ?? [], settings.excludedApps, process.pid);
-  const detectedApps = [...new Set(visible.map(item => runningActivity(item).application))].sort((a, b) => a.localeCompare(b));
-  return { settings, paused, activity, discordConnected: discordStatus === 'connected', discordStatus, browserConnected: false, browserDisabled: true, detectedApps, events, diagnostics: { engineReady: true, windowsAvailable: !!runningMonitor && runningProcesses !== null, platform: process.platform, detector: runningMonitor ? 'started' : 'unavailable', discord: discordStatus, browser: 'disabled' } };
+  const byName = new Map<string, {name: string; icon: string | null}>();
+  for (const item of visible) {
+    const name = runningActivity(item).application, icon = iconResults.get(iconKey(item))?.value ?? null;
+    const existing = byName.get(name);
+    if (!existing || (icon && (!existing.icon || item.processId === selectedPid))) byName.set(name, {name, icon});
+  }
+  const runningApps = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const detectedApps = runningApps.map(item => item.name);
+  const selected = visible.find(item => item.processId === selectedPid);
+  const activityIcon = activity && selected ? iconResults.get(iconKey(selected))?.value ?? null : null;
+  return { settings, paused, activity, activityIcon, runningApps, discordConnected: discordStatus === 'connected', discordStatus, browserConnected: false, browserDisabled: true, detectedApps, events, diagnostics: { engineReady: true, windowsAvailable: !!runningMonitor && runningProcesses !== null, platform: process.platform, detector: runningMonitor ? 'started' : 'unavailable', discord: discordStatus, browser: 'disabled' } };
 }
 function publish() { if (window && !window.isDestroyed()) window.webContents.send('state:changed', state()); }
+function updateIcons(processes: RunningProcess[]) {
+  iconProvider.retain(processes);
+  const present = new Set(processes.map(iconKey));
+  for (const key of iconResults.keys()) if (!present.has(key)) iconResults.delete(key);
+  // Limit concurrent and queued work and prioritise the app being displayed.
+  const candidates = [...processes].sort((a, b) => Number(b.processId === selectedPid) - Number(a.processId === selectedPid)).slice(0, 100);
+  const selected = candidates.find(item => item.processId === selectedPid);
+  if (selected) iconProvider.prioritize(selected);
+  for (const item of candidates) {
+    const key = iconKey(item), cached = iconResults.get(key);
+    if ((cached && cached.expires > Date.now()) || iconPending.has(key)) continue;
+    iconPending.add(key); const generation = iconGeneration;
+    void iconProvider.getIcon(item).then(value => {
+      if (generation !== iconGeneration) return;
+      iconPending.delete(key);
+      if (!runningProcesses?.some(current => iconKey(current) === key)) return;
+      iconResults.delete(key);
+      iconResults.set(key, {value, expires: Date.now() + (value ? 300000 : 30000)});
+      while (iconResults.size > 128) iconResults.delete(iconResults.keys().next().value!);
+      publish();
+    }).catch(() => { if (generation === iconGeneration) iconPending.delete(key); });
+    if (item.processId === selectedPid) iconProvider.prioritize(item);
+  }
+}
 function refresh() {
   if (timer) clearTimeout(timer); timer = null;
   const eligible = eligibleProcesses(runningProcesses ?? [], settings.excludedApps, process.pid);
@@ -37,6 +76,8 @@ function refresh() {
   const selectable = eligible.filter(item => activities.has(item.processId));
   const selected = selectRunningProcess(selectable, foreground?.processId ?? null, selectedPid);
   selectedPid = selected?.processId ?? null;
+  if (!paused && settings.onboardingComplete) updateIcons(eligible);
+  else { iconGeneration++; iconPending.clear(); iconProvider.retain([]); }
   const identity = selected ? `process:${selected.processId}:${selected.startedAt ?? 'unknown'}` : null;
   const candidates: ActivityCandidate[] = selected && identity
     ? [{windowId: identity, source: 'desktop', activity: activities.get(selected.processId)!}] : [];
@@ -51,6 +92,7 @@ function retryMonitors() {
 function startMonitor() {
   if (monitorRetry) { clearTimeout(monitorRetry); monitorRetry = null; }
   monitor?.stop(); runningMonitor?.stop(); foreground = null; runningProcesses = null; selectedPid = null;
+  iconGeneration++; iconPending.clear(); iconResults.clear(); iconProvider.retain([]);
   monitor = new ForegroundMonitor({intervalMs: settings.detectionIntervalMs, onObservation(value) { foreground = value; refresh(); }, onError() { foreground = null; refresh(); retryMonitors(); }});
   if (!monitor.start()) monitor = null;
   runningMonitor = new RunningProcessMonitor({intervalMs: Math.max(1000, settings.detectionIntervalMs), onObservation(value) { runningProcesses = value; refresh(); }, onError() { runningProcesses = null; refresh(); retryMonitors(); }});
@@ -93,7 +135,7 @@ app.on('before-quit', event => {
   event.preventDefault();
   if (shutdownStarted) return;
   shutdownStarted = true;
-  monitor?.stop(); runningMonitor?.stop();
+  monitor?.stop(); runningMonitor?.stop(); iconGeneration++; iconPending.clear(); iconProvider.dispose();
   if (timer) clearTimeout(timer);
   if (monitorRetry) clearTimeout(monitorRetry);
   void Promise.resolve(rpc?.stop()).catch(() => {}).finally(() => { shutdownComplete = true; app.quit(); });
