@@ -20,11 +20,31 @@ async function until(check: () => boolean): Promise<void> {
   }
 }
 
-test('presence redacts URLs from image fields and uses Discord epoch seconds', () => {
-  assert.deepEqual(toDiscordActivity({ application: 'VS Code', details: 'Editing code', state: 'TypeScript', imageKey: 'https://bad.example/x', startedAt: 1700000000000, confidence: 'generic' }), {
-    details: 'VS Code — Editing code', state: 'TypeScript', instance: false, timestamps: { start: 1700000000 },
+test('presence sends a name, separate details and an explicit validated image', () => {
+  assert.deepEqual(toDiscordActivity({ application: 'VS Code', details: 'Editing code', state: 'TypeScript', imageKey: 'code_icon', startedAt: 1700000000000, confidence: 'generic' }), {
+    name: 'VS Code', details: 'Editing code', state: 'TypeScript', instance: false, assets: { large_image: 'code_icon' }, timestamps: { start: 1700000000 },
   });
+  assert.equal(toDiscordActivity(null), null);
+  assert.equal(toDiscordActivity({ application: 'Editor\nSpoof', details: 'Working\u0085now', confidence: 'generic' })?.name, 'Editor Spoof');
+  assert.equal(toDiscordActivity({ application: 'Editor', details: 'Working\u0085now', confidence: 'generic' })?.details, 'Working now');
   assert.throws(() => new DiscordPresence({ clientId: '' }), /client ID/);
+});
+
+test('only accepted image references are included in the payload', () => {
+  const base = { application: 'Editor', details: 'Working', confidence: 'generic' as const };
+  for (const imageKey of ['editor-icon', 'https://images.example.com/icon.png']) {
+    assert.deepEqual(toDiscordActivity({ ...base, imageKey })?.assets, { large_image: imageKey });
+  }
+  for (const imageKey of [
+    'https://user:password@images.example.com/x', 'https://@images.example.com/x',
+    'https://images.example.com/x?secret=abc',
+    'https://images.example.com/x#fragment',
+    'https://localhost/image.png', 'https://127.0.0.1/a', 'https://192.168.1.1/a',
+    'https://[::1]/a', 'https://[fd00::1]/a', 'http://images.example.com/a',
+    'https://images.example.com/\nimage.png', 'https://images.example.com/\u0085image.png', 'https://images.example.com/' + 'a'.repeat(512),
+  ]) {
+    assert.equal(toDiscordActivity({ ...base, imageKey })?.assets, undefined, imageKey);
+  }
 });
 
 test('handshake, ACK, deduplication, reconnection and clear over local IPC', async () => {
@@ -55,16 +75,20 @@ test('handshake, ACK, deduplication, reconnection and clear over local IPC', asy
   const statuses: string[] = [];
   const client = new DiscordPresence({ clientId: '123456789012345678', socketPaths: [path], timeoutMs: 500, reconnectDelayMs: 20, onStatus: (s) => statuses.push(s) });
   try {
-    const activity = { application: 'Editor', details: 'Working', confidence: 'generic' as const };
+    const activity = { application: 'Editor', details: 'Working', imageKey: 'https://images.example.com/editor.png', confidence: 'generic' as const };
     client.setActivity(activity); client.start();
     await until(() => received.length === 1);
-    assert.equal(received[0].args.activity.details, 'Editor — Working');
+    assert.equal(received[0].args.activity.name, 'Editor');
+    assert.equal(received[0].args.activity.details, 'Working');
+    assert.equal(received[0].args.activity.assets.large_image, activity.imageKey);
     client.setActivity(activity);
     await new Promise((resolve) => setTimeout(resolve, 60));
     assert.equal(received.length, 1);
     for (const socket of sockets) socket.destroy();
     await until(() => received.length === 2);
-    assert.equal(received[1].args.activity.details, 'Editor — Working');
+    assert.equal(received[1].args.activity.name, 'Editor');
+    assert.equal(received[1].args.activity.details, 'Working');
+    assert.equal(received[1].args.activity.assets.large_image, activity.imageKey);
     assert.ok(statuses.includes('disconnected'));
     await client.stop();
     await until(() => received.length === 3);

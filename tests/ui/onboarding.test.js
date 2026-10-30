@@ -94,3 +94,60 @@ describe('first-run language and Discord flow', () => {
     dom.window.close();
   });
 });
+
+describe('running apps and browser status', () => {
+  it('shows current apps and clearly disables browser-only features', async () => {
+    const app = await launch({ ...initial, onboardingComplete: true, language: 'ko' });
+    const { document: d, dom } = app;
+    app.update({ browserDisabled: true, browserConnected: false, detectedApps: ['Code', 'obs64'] });
+    expect(d.querySelector('#browser-status').textContent).toBe('사용 안 함');
+    expect(d.querySelector('#browser-indicator').textContent).toBe('사용 안 함');
+    expect(d.querySelector('.nav[data-page=websites]').hidden).toBe(true);
+    expect(d.querySelector('#rule-domain').disabled).toBe(true);
+    expect(d.querySelector('#rule-path').disabled).toBe(true);
+    expect(d.querySelector('#diagnostic-list').textContent).toContain('사용 안 함');
+    expect([...d.querySelectorAll('#apps-list li')].map(node => node.textContent)).toEqual(['Code', 'obs64']);
+    app.update({ detectedApps: ['obs64'] });
+    expect([...d.querySelectorAll('#apps-list li')].map(node => node.textContent)).toEqual(['obs64']);
+    dom.window.close();
+  });
+
+  it('saves, edits and clears an image asset key on a custom rule', async () => {
+    const app = await launch({ ...initial, onboardingComplete: true });
+    const { document: d, dom } = app;
+    app.update({ browserDisabled: true });
+    d.querySelector('#rule-id').value = 'editor';
+    d.querySelector('#rule-executable').value = 'Code';
+    d.querySelector('#rule-details').value = 'Using editor';
+    d.querySelector('#rule-image-key').value = 'vscode_icon';
+    d.querySelector('#rule-display-name').value = 'Visual Studio Code';
+    d.querySelector('#rule-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await flush();
+    expect(app.current().settings.rules[0].presence.imageKey).toBe('vscode_icon');
+    expect(app.current().settings.rules[0].presence.application).toBe('Visual Studio Code');
+    d.querySelector('#rules-list button').click();
+    expect(d.querySelector('#rule-image-key').value).toBe('vscode_icon');
+    d.querySelector('#rule-image-key').value = 'https://images.example.com/code.png';
+    d.querySelector('#rule-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await flush();
+    expect(app.current().settings.rules[0].presence.imageKey).toBe('https://images.example.com/code.png');
+    d.querySelector('#rules-list button').click();
+    d.querySelector('#rule-image-key').value = 'https://127.0.0.1/private.png';
+    d.querySelector('#rule-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await flush();
+    expect(app.current().settings.rules[0].presence.imageKey).toBe('https://images.example.com/code.png');
+    for (const invalid of ['https://@images.example.com/a.png', 'https://images.example.com/a.png?secret=1', 'https://images.example.com\\private.png']) {
+      d.querySelector('#rule-image-key').value = invalid;
+      d.querySelector('#rule-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+      await flush();
+      expect(app.current().settings.rules[0].presence.imageKey).toBe('https://images.example.com/code.png');
+    }
+    d.querySelector('#rule-image-key').value = '';
+    d.querySelector('#rule-display-name').value = '';
+    d.querySelector('#rule-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true }));
+    await flush();
+    expect(app.current().settings.rules[0].presence.imageKey).toBeUndefined();
+    expect(app.current().settings.rules[0].presence.application).toBeUndefined();
+    dom.window.close();
+  });
+});

@@ -1,6 +1,6 @@
 # AutoPresence (development preview)
 
-AutoPresence is an in-progress Windows Discord activity detector. This repository is not yet a finished or Windows-validated release. It uses Electron and TypeScript: Electron simplifies a shared JavaScript desktop UI and integration, at the cost of substantially higher memory use than a native WebView/Tauri approach. Windows measurements and a performance comparison are still required.
+AutoPresence is an in-progress Windows Discord activity detector. This repository is not yet a finished or Windows-validated release. It uses Electron and TypeScript; Windows performance and end-to-end behavior still need measurement.
 
 ## Development
 
@@ -12,18 +12,26 @@ pnpm build
 pnpm test
 ```
 
-The build emits `dist-js/` and two browser-extension directories under `extension/build/`. On a Windows desktop, `pnpm start` starts the Electron application after building. On first launch, choose English or Korean, then start the Discord desktop client and enter a Discord developer Application ID to connect. You can skip connection and configure it later in Settings, where you can also change the language. Create an application in the Discord Developer Portal and copy its Application ID from General Information; this is a public application identifier, not an account token. One ID has one Discord application name, and image keys must be registered with that application. Discord integration uses local IPC; the older Discord RPC library is deprecated, and current official SDK compatibility remains to be verified.
+On a Windows desktop, `pnpm start` starts the Electron application after building. On first launch, choose English or Korean, then start the Discord desktop client and enter a Discord developer Application ID. You can configure the connection later in Settings. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications) and copy its Application ID from General Information. The ID is public; do not enter an account token or password.
 
-See [extension/README.md](extension/README.md) for loading the extension and per-user Native Messaging host registration and removal. Detailed site signals must be enabled in both the extension and app. Browser extensions require separate user installation. The app only accepts a browser signal while a corresponding browser process is in the foreground and expires it after 15 seconds. A local pipe is not an authentication boundary against other local processes.
+The detector lists processes with visible top-level windows in the current session, including minimized windows. The active eligible app takes priority; when the active window is excluded, the previously selected app remains selected while it is running. Otherwise, the most recently started eligible app is selected. Browser processes, Discord, AutoPresence, and common system shells are excluded. Tray-only, hidden-window and some packaged apps may not appear. Details say the app is **running**, not that a particular action is being performed. Exclusions and custom rules remain available.
 
-`pnpm package:win` attempts x64 NSIS and portable packages. Windows installation, removal, executable startup, browser registration and Discord integration are not yet verified. Native host registration is currently manual, including on installed builds; automatic installer registration is not implemented. Unsigned executables can trigger SmartScreen warnings. Do not treat generated binaries as a verified release.
+Browser and website detection is temporarily disabled: the application does not start its Native Messaging server and does not use browser signals. The extension source is retained for future work but is not included in this package. If you installed a previous browser extension, disable or uninstall it separately; the desktop app cannot turn it off for you.
+
+## Discord names and images
+
+The app sends the detected name in the RPC activity `name` field and an image reference in `assets.large_image`. Some common apps (Visual Studio Code, Figma, Notion, Spotify, Steam) use public PNG logos from GitHub's `github/explore` repository, pinned to a specific commit. Other apps use text only unless you add an Activity Rule with a display name and either an image asset key registered to your Discord application or a public HTTPS image URL. Discord retrieves external images; do not use URLs containing private information. URLs with credentials, queries, fragments, local hostnames or IP addresses are rejected.
+
+The implementation references the open-source [xhayper/discord-rpc](https://github.com/xhayper/discord-rpc) activity payload and the [Discord activity documentation](https://github.com/discord/discord-api-docs/blob/main/developers/events/gateway-events.mdx). The actual appearance of the requested name and image depends on Discord's client and API behavior and has not yet been verified on Windows; an RPC acknowledgement is not proof of how a profile renders. The connected Discord Application ID may still affect the name Discord shows.
+
+`pnpm package:win` attempts x64 NSIS and portable packages. Windows installation, removal, executable startup and Discord integration are not yet verified. Unsigned executables can trigger SmartScreen warnings. Do not treat generated binaries as a verified release.
 
 ## Privacy and limitations
 
-Foreground application name and, with the extension, active domain are used by default. Page titles, URLs and executable paths are not sent to Discord. Private browsing is excluded by the extension. Site-specific signals are optional, allowlisted, and send predefined categories rather than URLs. Pause and exclusion controls are provided. No account token or user keystrokes are collected.
+The running application name and generic activity can be published to Discord. Window titles and executable paths are not collected by default. Known application logo URLs and explicitly configured image URLs are shared with Discord for image fetching. Pause and exclusion controls are provided. No account token or keystrokes are collected.
 
-This preview does not implement application-specific internal detection for VS Code, Figma, Notion, Word, or Photoshop; unsupported actions are not inferred. The extension currently implements a subset of site signals. Path, file-path, and window-title rules are represented by the core but cannot match in the current app integration because those values are not collected. The browser association is process-name based, not proof of the exact native window. The supplied tests use mocks or Linux-compatible components; they do not prove Windows operation, browser integration, performance, or installer behavior.
+This preview does not implement application-specific internal detection; it does not infer unsupported actions. Path and window-title rules cannot match because those values are not collected. The supplied tests use mocks or Linux-compatible components; they do not prove Windows operation, Discord rendering, performance, or installer behavior.
 
 ## Verification status
 
-`pnpm test` runs unit tests for the engine, protocol, extension behavior, Windows detector parsing and local fake Discord IPC. A Windows desktop with Discord, browsers and the extension is required to validate the complete workflow and to measure CPU and memory use.
+`pnpm test` exercises the engine, process-selection policy, protocol, UI and fake Discord IPC. A Windows desktop with Discord is required to validate the complete workflow and measure CPU and memory use.

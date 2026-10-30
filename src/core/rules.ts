@@ -1,4 +1,5 @@
 import { normalizeDomain } from './adapters.js';
+import { validateImageReference } from './image.js';
 import type { Activity } from './types.js';
 
 export interface RuleMatch {
@@ -14,7 +15,7 @@ export interface ActivityRule {
   id: string;
   enabled: boolean;
   match: RuleMatch;
-  presence: { details: string; state?: string; imageKey?: string };
+  presence: { details: string; state?: string; imageKey?: string; application?: string };
   exclude?: boolean;
 }
 export interface RuleContext {
@@ -55,8 +56,10 @@ export function validateRule(value: unknown): value is ActivityRule {
   if (!entries.length || entries.some(([k,v]) => !allowedMatch.has(k) || typeof v !== 'string' || v.length < 1 || v.length > 256 || /[\u0000-\u001f]/.test(v))) return false;
   if (typeof value.match.domain === 'string' && !normalizeDomain(value.match.domain)) return false;
   if (typeof value.match.pathPattern === 'string' && (!value.match.pathPattern.startsWith('/') || /[?#]/.test(value.match.pathPattern))) return false;
+  if (value.presence.application !== undefined && (typeof value.presence.application !== 'string' || !value.presence.application.trim())) return false;
   if (typeof value.presence.details !== 'string' || !value.presence.details.trim() || value.presence.details.length > 128 || /[\u0000-\u001f]/.test(value.presence.details)) return false;
-  for (const name of ['state', 'imageKey']) {
+  if (value.presence.imageKey !== undefined && !validateImageReference(value.presence.imageKey)) return false;
+  for (const name of ['state', 'application']) {
     const field = value.presence[name];
     if (field !== undefined && (typeof field !== 'string' || field.length > 128 || /[\u0000-\u001f]/.test(field))) return false;
   }
@@ -66,7 +69,8 @@ export function matchesRule(rule: ActivityRule, context: RuleContext): boolean {
   if (!validateRule(rule) || !rule.enabled) return false;
   const m = rule.match;
   const eq = (a: string | undefined, b: string | undefined) => a === undefined || (b !== undefined && a.toLowerCase() === b.toLowerCase());
-  if (!eq(m.executableName, context.executableName) || !eq(m.executablePath, context.executablePath) ||
+  const executable = (v: string | undefined) => v?.toLowerCase().replace(/\.exe$/, '');
+  if (!eq(executable(m.executableName), executable(context.executableName)) || !eq(m.executablePath, context.executablePath) ||
       !eq(m.application, context.application) || !eq(m.activityType, context.activityType)) return false;
   if (m.domain) {
     const domain = context.domain && normalizeDomain(context.domain);
@@ -82,5 +86,5 @@ export function applyRules(rules: readonly ActivityRule[], context: RuleContext,
   const rule = rules.find(r => matchesRule(r, context));
   if (!rule) return undefined;
   if (rule.exclude) return null;
-  return { application: base.application, ...rule.presence, confidence: base.confidence };
+  return { ...base, ...rule.presence, confidence: base.confidence };
 }

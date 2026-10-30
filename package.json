@@ -1,6 +1,6 @@
 {
   "name": "autopresence",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Privacy-first Discord activity detection for Windows",
   "main": "dist-js/main.js",
@@ -26,14 +26,14 @@
     },
     "files": [
       "dist-js/**/*",
-      "extension/**/*",
       "package.json"
     ],
     "win": {
       "target": [
         "nsis",
         "portable"
-      ]
+      ],
+      "icon": "src/assets/icon.ico"
     },
     "nsis": {
       "oneClick": false,

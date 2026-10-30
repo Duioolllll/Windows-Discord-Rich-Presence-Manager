@@ -76,13 +76,20 @@
     text('#activity-name', application);
     text('#activity-details', details);
     text('#activity-confidence', activity ? (activity.confidence === 'confirmed' ? 'Observed activity' : 'General activity') : 'Nothing shared yet');
-    text('#preview-name', activity ? application : t('No activity'));
+    text('#preview-name', activity ? application : t('Discord application'));
     text('#preview-details', activity ? details : t('Your activity will appear here.'));
+    text('#preview-image', activity && activity.imageKey ? `${t('Image asset key')}: ${activity.imageKey}` : 'No image asset key');
     text('#preview-state', activity && typeof activity.state === 'string' ? activity.state : '');
     text('#discord-status', present(state.discordConnected, 'Connected', 'Disconnected'));
     text('#discord-indicator', present(state.discordConnected, 'Ready', 'Not connected'));
-    text('#browser-status', present(state.browserConnected, 'Connected', 'Disconnected'));
-    text('#browser-indicator', present(state.browserConnected, 'Ready', 'Not connected'));
+    const browserDisabled = state.browserDisabled === true;
+    text('#browser-status', browserDisabled ? 'Disabled' : present(state.browserConnected, 'Connected', 'Disconnected'));
+    text('#browser-indicator', browserDisabled ? 'Disabled' : present(state.browserConnected, 'Ready', 'Not connected'));
+    const websiteNav = document.querySelector('.nav[data-page=websites]');
+    websiteNav.hidden = browserDisabled;
+    $('#rule-domain').disabled = browserDisabled;
+    $('#rule-path').disabled = browserDisabled;
+    if (browserDisabled && websiteNav.classList.contains('active')) document.querySelector('.nav[data-page=dashboard]').click();
     renderEvents();
     renderDiagnostics();
     renderApps();
@@ -93,14 +100,15 @@
     const labels = [];
     if (typeof state.paused === 'boolean') labels.push(state.paused ? 'Detection paused' : 'Detection active');
     if (typeof state.discordConnected === 'boolean') labels.push(state.discordConnected ? 'Discord connected' : 'Discord disconnected');
-    if (typeof state.browserConnected === 'boolean') labels.push(state.browserConnected ? 'Browser extension connected' : 'Browser extension disconnected');
+    if (state.browserDisabled === true) labels.push('Browser detection disabled');
+    else if (typeof state.browserConnected === 'boolean') labels.push(state.browserConnected ? 'Browser extension connected' : 'Browser extension disconnected');
     if (!labels.length) labels.push('No events yet.');
     for (const label of labels) { const li = document.createElement('li'); li.textContent = t(label); if (label === 'No events yet.') li.className = 'empty'; list.append(li); }
   }
   function renderDiagnostics() {
     const list = $('#diagnostic-list'); list.replaceChildren();
     const diagnostic = state.diagnostics && typeof state.diagnostics === 'object' ? state.diagnostics : {};
-    const entries = [ ['Detection', present(state.paused, 'Paused', 'Active')], ['Discord connection', present(state.discordConnected, 'Connected', 'Disconnected')], ['Browser connection', present(state.browserConnected, 'Connected', 'Disconnected')], ['Engine', present(diagnostic.engineReady, 'Ready', 'Unavailable')], ['Windows detection', present(diagnostic.windowsAvailable, 'Available', 'Unavailable')] ];
+    const entries = [ ['Detection', present(state.paused, 'Paused', 'Active')], ['Discord connection', present(state.discordConnected, 'Connected', 'Disconnected')], ['Browser connection', state.browserDisabled === true ? t('Disabled') : present(state.browserConnected, 'Connected', 'Disconnected')], ['Engine', present(diagnostic.engineReady, 'Ready', 'Unavailable')], ['Windows detection', present(diagnostic.windowsAvailable, 'Available', 'Unavailable')] ];
     for (const [label, value] of entries) { const dt = document.createElement('dt'); const dd = document.createElement('dd'); dt.textContent = t(label); dd.textContent = value; list.append(dt, dd); }
   }
   function renderApps() {
@@ -108,7 +116,7 @@
     const apps = Array.isArray(state.detectedApps) ? state.detectedApps : [];
     // Only names provided as strings are used; do not display process metadata or paths.
     const names = apps.filter((name) => typeof name === 'string' && !/[\\/]/.test(name)).slice(0, 100);
-    if (!names.length) { const li = document.createElement('li'); li.className = 'empty'; li.textContent = t('No applications detected yet.'); list.append(li); }
+    if (!names.length) { const li = document.createElement('li'); li.className = 'empty'; li.textContent = t('No running applications detected.'); list.append(li); }
     for (const name of names) { const li = document.createElement('li'); li.textContent = name; list.append(li); }
   }
   function renderTagList(selector, field) {
@@ -172,20 +180,36 @@
   }
   function resetRule() { editingRuleId = null; $('#rule-form').reset(); $('#rule-enabled').checked = true; text('#rule-editor-title', 'New rule'); $('#rule-cancel').hidden = true; text('#rule-result', ''); }
   function editRule(rule) {
+    $('#rule-image-key').value = rule.presence && rule.presence.imageKey || '';
+    $('#rule-display-name').value = rule.presence && rule.presence.application || '';
     editingRuleId = rule.id; $('#rule-id').value = rule.id || ''; $('#rule-executable').value = rule.match && rule.match.executableName || ''; $('#rule-domain').value = rule.match && rule.match.domain || ''; $('#rule-path').value = rule.match && rule.match.pathPattern || ''; $('#rule-details').value = rule.presence && rule.presence.details || ''; $('#rule-state').value = rule.presence && rule.presence.state || ''; $('#rule-enabled').checked = rule.enabled !== false; text('#rule-editor-title', 'Edit rule'); $('#rule-cancel').hidden = false; text('#rule-result', ''); $('#rule-id').focus();
   }
+  function validImageKeyOrUrl(value) {
+    if (!value || value.length > 512 || /[\x00-\x20\x7f-\x9f\\]/.test(value)) return false;
+    if (/^[a-zA-Z0-9_-]{1,64}$/.test(value)) return true;
+    if (/[?#]/.test(value) || /^https:\/\/[^/]*@/i.test(value)) return false;
+    try {
+      const parsed = new URL(value), host = parsed.hostname.toLowerCase();
+      if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port ||
+          host.startsWith('[') || host.endsWith('.') || !host.includes('.') ||
+          /(?:^|\.)(?:localhost|local|internal|invalid|test)$/.test(host)) return false;
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false;
+      return true;
+    } catch { return false; }
+  }
   function ruleFromForm() {
-    const id = $('#rule-id').value.trim(); const executableName = $('#rule-executable').value.trim(); const domain = $('#rule-domain').value.trim().toLowerCase(); const pathPattern = $('#rule-path').value.trim(); const details = $('#rule-details').value.trim(); const presenceState = $('#rule-state').value.trim();
+    const id = $('#rule-id').value.trim(); const executableName = $('#rule-executable').value.trim(); const domain = $('#rule-domain').value.trim().toLowerCase(); const pathPattern = $('#rule-path').value.trim(); const details = $('#rule-details').value.trim(); const presenceState = $('#rule-state').value.trim(); const imageKey = $('#rule-image-key').value.trim(); const displayName = $('#rule-display-name').value.trim();
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) throw new Error(t('Rule ID may contain only letters, numbers, underscores and hyphens.'));
     if (!executableName && !domain && !pathPattern) throw new Error(t('Add at least one matching condition.'));
     if (domain && !validDomain(domain)) throw new Error(t('Enter a valid domain.'));
     if (pathPattern && (!domain || !pathPattern.startsWith('/') || /[?#]/.test(pathPattern) || pathPattern.length > 256)) throw new Error(t('A path pattern requires a domain, must start with / and cannot contain a query or fragment.'));
-    if (!details || details.length > 128 || presenceState.length > 128) throw new Error(t('Details are required and presence text must be at most 128 characters.'));
+    if (!details || details.length > 128 || presenceState.length > 128 || displayName.length > 128) throw new Error(t('Details are required and presence text must be at most 128 characters.'));
+    if (imageKey && !validImageKeyOrUrl(imageKey)) throw new Error(t('Enter an asset key or a public HTTPS image URL without credentials, query or fragment.'));
     const previous = editingRuleId === null ? null : settings.rules.find((item) => item && item.id === editingRuleId);
     // Preserve fields from rules authored outside this editor.
     const match = { ...(previous && previous.match || {}) }; delete match.executableName; delete match.domain; delete match.pathPattern;
     if (executableName) match.executableName = executableName; if (domain) match.domain = domain; if (pathPattern) match.pathPattern = pathPattern;
-    const presence = { ...(previous && previous.presence || {}), details }; delete presence.state; if (presenceState) presence.state = presenceState;
+    const presence = { ...(previous && previous.presence || {}), details }; delete presence.state; if (presenceState) presence.state = presenceState; delete presence.imageKey; if (imageKey) presence.imageKey = imageKey; delete presence.application; if (displayName) presence.application = displayName;
     return { ...(previous || {}), id, enabled: $('#rule-enabled').checked, match, presence };
   }
   for (const button of document.querySelectorAll('.nav')) button.addEventListener('click', () => {

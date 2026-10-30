@@ -1,70 +1,68 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray } from 'electron';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ActivityEngine, applyRules, detectSiteActivity, validateRule, matchesRule, type Activity, type ActivityCandidate, type RuleContext } from './core';
+import { ActivityEngine, applyRules, eligibleProcesses, runningActivity, selectRunningProcess, validateRule, matchesRule, type Activity, type ActivityCandidate, type RuleContext } from './core';
 import { ForegroundMonitor, type ForegroundObservation } from './windows/foreground';
 import { DiscordPresence, type DiscordStatus } from './discord';
-import { startBrowserServer } from './native/server';
-import type { BrowserMessage, BrowserName, BrowserSignal } from './native/protocol';
-import type { Server } from 'node:net';
+import { RunningProcessMonitor, type RunningProcess } from './windows/running';
 import { DEFAULT_SETTINGS, cleanSettings, restoreSettings, type Settings } from './settings';
 
 let settings: Settings = { ...DEFAULT_SETTINGS }, paused = false, quitting = false;
-let window: BrowserWindow | null = null, tray: Tray | null = null, monitor: ForegroundMonitor | null = null, server: Server | null = null, rpc: DiscordPresence | null = null;
+let window: BrowserWindow | null = null, tray: Tray | null = null, monitor: ForegroundMonitor | null = null, runningMonitor: RunningProcessMonitor | null = null, rpc: DiscordPresence | null = null;
 let discordStatus: DiscordStatus = 'stopped', foreground: ForegroundObservation | null = null, activity: Activity | null = null;
-const browserMessages = new Map<BrowserName, {message: Extract<BrowserMessage,{kind:'activity'}>, at: number}>();
+let runningProcesses: RunningProcess[] | null = null;
+let selectedPid: number | null = null;
 const engine = new ActivityEngine(1000);
-const detectedApps: string[] = [], events: string[] = [];
-let timer: NodeJS.Timeout | null = null;
+const events: string[] = [];
+let timer: NodeJS.Timeout | null = null, monitorRetry: NodeJS.Timeout | null = null;
+let shutdownStarted = false, shutdownComplete = false;
 
-function state() { return { settings, paused, activity, discordConnected: discordStatus === 'connected', discordStatus, browserConnected: [...browserMessages.values()].some(x => Date.now() - x.at < 15000), detectedApps, events, diagnostics: { engineReady: true, windowsAvailable: !!monitor, platform: process.platform, detector: monitor ? 'started' : 'unavailable', discord: discordStatus, browser: server ? 'listening' : 'unavailable' } }; }
-function publish() { if (window && !window.isDestroyed()) window.webContents.send('state:changed', state()); }
-function isDomainIn(domain: string, list: string[]) { return list.some(d => domain === d || domain.endsWith('.' + d)); }
-function browserFor(name: string): BrowserName | null { const n = name.toLowerCase().replace(/\.exe$/, ''); return n === 'chrome' ? 'chrome' : n === 'msedge' ? 'edge' : n === 'firefox' ? 'firefox' : null; }
-function detailsForSignal(signal: BrowserSignal | undefined): {details: string; application: string} | null {
-  const map: Partial<Record<BrowserSignal, {details:string; application:string}>> = {
-    'github-repository': {application:'GitHub',details:'Browsing a repository'}, 'github-issue': {application:'GitHub',details:'Viewing issues'}, 'github-pull-request': {application:'GitHub',details:'Viewing pull requests'}, 'github-code': {application:'GitHub',details:'Browsing code'}, 'github-actions': {application:'GitHub',details:'Viewing Actions'}, 'figma-file': {application:'Figma',details:'Viewing a design file'}, 'figma-prototype': {application:'Figma',details:'Viewing a prototype'}, 'youtube-playing': {application:'YouTube',details:'Watching a video'}, 'youtube-paused': {application:'YouTube',details:'Video paused'}, 'youtube-playlist': {application:'YouTube',details:'Browsing a playlist'}, 'google-docs-document': {application:'Google Docs',details:'Working in Google Docs'}
-  }; return signal ? map[signal] ?? null : null;
+function state() {
+  const visible = eligibleProcesses(runningProcesses ?? [], settings.excludedApps, process.pid);
+  const detectedApps = [...new Set(visible.map(item => runningActivity(item).application))].sort((a, b) => a.localeCompare(b));
+  return { settings, paused, activity, discordConnected: discordStatus === 'connected', discordStatus, browserConnected: false, browserDisabled: true, detectedApps, events, diagnostics: { engineReady: true, windowsAvailable: !!runningMonitor && runningProcesses !== null, platform: process.platform, detector: runningMonitor ? 'started' : 'unavailable', discord: discordStatus, browser: 'disabled' } };
 }
+function publish() { if (window && !window.isDestroyed()) window.webContents.send('state:changed', state()); }
 function refresh() {
   if (timer) clearTimeout(timer); timer = null;
-  const candidates: ActivityCandidate[] = [];
-  let context: RuleContext = { detailedAllowed: false, titleAllowed: false };
-  if (foreground) {
-    const name = foreground.processName;
-    context = { executableName: name, application: name, detailedAllowed: false, titleAllowed: false };
-    if (!settings.excludedApps.some(x => x.replace(/\.exe$/, '') === name.toLowerCase().replace(/\.exe$/, ''))) {
-      let a: Activity = { application: name, details: `Using ${name}`, confidence: 'generic' };
-      const browser = browserFor(name), entry = browser && browserMessages.get(browser);
-      let source: ActivityCandidate['source'] = 'desktop';
-      if (entry && Date.now() - entry.at < 15000 && !isDomainIn(entry.message.domain, settings.excludedDomains)) {
-        const domain = entry.message.domain, allowed = isDomainIn(domain, settings.detailedDomains);
-        context = { ...context, domain, detailedAllowed: allowed };
-        a = detectSiteActivity({domain, detailedAllowed: false}, settings.disabledAdapters) ?? a;
-        source = 'browser-domain';
-        const detail = allowed && entry.message.signal ? detailsForSignal(entry.message.signal) : null;
-        if (detail && !settings.disabledAdapters.includes(detail.application.toLowerCase())) { a = { ...detail, confidence: 'confirmed' }; source = 'browser-confirmed'; }
-      } else if (entry && Date.now() - entry.at < 15000 && isDomainIn(entry.message.domain, settings.excludedDomains)) {
-        // Excluded domains must not be replaced by generic browser activity.
-        a = null as unknown as Activity;
-      }
-      if (a) { const custom = applyRules(settings.rules, context, a); if (custom !== null) candidates.push({windowId: foreground.windowId, source, activity: custom ?? a}); }
-    }
+  const eligible = eligibleProcesses(runningProcesses ?? [], settings.excludedApps, process.pid);
+  // Apply user exclusions before selecting; an excluded process must not hide others.
+  const activities = new Map<number, Activity>();
+  for (const item of eligible) {
+    const base = runningActivity(item);
+    const context: RuleContext = {executableName: item.processName, application: base.application, detailedAllowed: false, titleAllowed: false};
+    const custom = applyRules(settings.rules, context, base);
+    if (custom !== null) activities.set(item.processId, custom ?? base);
   }
-  const result = engine.evaluate({ foregroundWindowId: foreground?.windowId ?? null, candidates, paused: paused || !settings.onboardingComplete, idleDetectionEnabled: settings.idleEnabled, idle: !!foreground && foreground.idleMilliseconds >= 300000 });
-  activity = result.activity; if (result.changed) { rpc?.setActivity(activity); events.unshift(activity ? `Activity: ${activity.application}` : 'Activity cleared'); events.splice(20); }
+  const selectable = eligible.filter(item => activities.has(item.processId));
+  const selected = selectRunningProcess(selectable, foreground?.processId ?? null, selectedPid);
+  selectedPid = selected?.processId ?? null;
+  const identity = selected ? `process:${selected.processId}:${selected.startedAt ?? 'unknown'}` : null;
+  const candidates: ActivityCandidate[] = selected && identity
+    ? [{windowId: identity, source: 'desktop', activity: activities.get(selected.processId)!}] : [];
+  const result = engine.evaluate({ foregroundWindowId: identity, candidates, paused: paused || !settings.onboardingComplete, idleDetectionEnabled: settings.idleEnabled, idle: !foreground || foreground.idleMilliseconds >= 300000 });
+  activity = result.activity;
+  if (result.changed) { rpc?.setActivity(activity); events.unshift(activity ? `Activity: ${activity.application}` : 'Activity cleared'); events.splice(20); }
   publish(); const delay = engine.nextDelay(); if (delay !== null) timer = setTimeout(refresh, Math.max(delay, 1));
 }
+function retryMonitors() {
+  if (!quitting && !monitorRetry) monitorRetry = setTimeout(() => { monitorRetry = null; startMonitor(); }, 5000);
+}
 function startMonitor() {
-  monitor?.stop(); monitor = new ForegroundMonitor({intervalMs: settings.detectionIntervalMs, onObservation(value) { foreground = value; if (value && !detectedApps.includes(value.processName)) {detectedApps.unshift(value.processName); detectedApps.splice(30);} refresh(); }, onError() { foreground = null; refresh(); }});
+  if (monitorRetry) { clearTimeout(monitorRetry); monitorRetry = null; }
+  monitor?.stop(); runningMonitor?.stop(); foreground = null; runningProcesses = null; selectedPid = null;
+  monitor = new ForegroundMonitor({intervalMs: settings.detectionIntervalMs, onObservation(value) { foreground = value; refresh(); }, onError() { foreground = null; refresh(); retryMonitors(); }});
   if (!monitor.start()) monitor = null;
+  runningMonitor = new RunningProcessMonitor({intervalMs: Math.max(1000, settings.detectionIntervalMs), onObservation(value) { runningProcesses = value; refresh(); }, onError() { runningProcesses = null; refresh(); retryMonitors(); }});
+  if (!runningMonitor.start()) runningMonitor = null;
+  refresh();
 }
 async function configureDiscord() {
   await rpc?.stop(); rpc = null; discordStatus = 'stopped';
   if (settings.discordClientId) { rpc = new DiscordPresence({clientId: settings.discordClientId, reconnect: settings.discordReconnect, onStatus(status) {discordStatus = status; publish();}}); rpc.setActivity(activity); rpc.start(); }
 }
 function createWindow() {
-  window = new BrowserWindow({ width: 1200, height: 800, minWidth: 780, minHeight: 580, show: false, webPreferences: { preload: join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  window = new BrowserWindow({ width: 1200, height: 800, minWidth: 780, minHeight: 580, show: false, icon: join(__dirname, 'assets', 'icon.png'), webPreferences: { preload: join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   window.webContents.setWindowOpenHandler(() => ({action:'deny'}));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.loadFile(join(__dirname, 'ui', 'index.html')); window.once('ready-to-show', () => window?.show());
@@ -77,17 +75,26 @@ async function main() {
     settings = restoreSettings(saved);
   } catch { settings = { ...DEFAULT_SETTINGS }; }
   createWindow();
-  const icon = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVQ4T2NkoBAwUqifgboGhjGqGQ0YAAB5JwIRcGvkdQAAAABJRU5ErkJggg==');
+  const icon = nativeImage.createFromPath(join(__dirname, 'assets', 'icon.png'));
   try { tray = new Tray(icon); tray.setToolTip('AutoPresence'); tray.setContextMenu(Menu.buildFromTemplate([{label:'Open', click: () => window?.show()}, {label:'Pause / Resume', click: () => {paused = !paused; refresh();}}, {label:'Quit', click: () => {quitting = true; app.quit();}}])); tray.on('double-click', () => window?.show()); } catch { tray = null; }
   ipcMain.handle('state:get', () => state());
-  ipcMain.handle('settings:save', async (_e, value: unknown) => { const next = cleanSettings(value, settings.onboardingComplete); const previous = settings; await writeFile(join(app.getPath('userData'), 'settings.json'), JSON.stringify(next, null, 2), {mode:0o600}); settings = next; if (process.platform === 'win32' && app.isPackaged && previous.autoStart !== next.autoStart) app.setLoginItemSettings({openAtLogin: settings.autoStart}); if (previous.detectionIntervalMs !== next.detectionIntervalMs) startMonitor(); if (previous.discordClientId !== next.discordClientId || previous.discordReconnect !== next.discordReconnect) await configureDiscord(); refresh(); return state(); });
+  ipcMain.handle('settings:save', async (_e, value: unknown) => { const next = cleanSettings(value, settings.onboardingComplete); const previous = settings; await writeFile(join(app.getPath('userData'), 'settings.json'), JSON.stringify(next, null, 2), {mode:0o600}); settings = next; if (process.platform === 'win32' && app.isPackaged && previous.autoStart !== next.autoStart) app.setLoginItemSettings({openAtLogin: settings.autoStart}); if (previous.detectionIntervalMs !== next.detectionIntervalMs) startMonitor(); if (previous.discordClientId !== next.discordClientId || previous.discordReconnect !== next.discordReconnect || (next.discordClientId && discordStatus === 'disconnected')) await configureDiscord(); refresh(); return state(); });
   ipcMain.handle('activity:pause', (_e, value: unknown) => { if (typeof value !== 'boolean') throw new Error('Invalid pause state'); paused = value; refresh(); return state(); });
-  ipcMain.handle('rule:test', (_e, value: unknown) => { if (!validateRule(value)) return {matches: false, message: 'Invalid rule.'}; const browser = foreground && browserFor(foreground.processName); const entry = browser && browserMessages.get(browser); const domain = entry && Date.now() - entry.at < 15000 ? entry.message.domain : undefined; const context: RuleContext = {executableName: foreground?.processName, application: foreground?.processName, domain, detailedAllowed: !!domain && isDomainIn(domain, settings.detailedDomains), titleAllowed: false}; const matches = matchesRule(value, context); return {matches, message: matches ? 'Rule matches the current observation.' : 'Rule does not match the current observation; path and title are unavailable.'}; });
+  ipcMain.handle('rule:test', (_e, value: unknown) => { if (!validateRule(value)) return {matches: false, message: 'Invalid rule.'}; const selected = runningProcesses?.find(item => item.processId === selectedPid); const context: RuleContext = {executableName: selected?.processName, application: selected ? runningActivity(selected).application : undefined, detailedAllowed: false, titleAllowed: false}; const matches = matchesRule(value, context); return {matches, message: matches ? 'Rule matches the current observation.' : 'Rule does not match the current observation; path and title are unavailable.'}; });
   ipcMain.handle('app:quit', () => { quitting = true; app.quit(); });
   startMonitor(); await configureDiscord();
-  try { server = await startBrowserServer(message => { if (message.kind === 'clear') browserMessages.delete(message.browser); else browserMessages.set(message.browser, {message, at: Date.now()}); refresh(); }); } catch { server = null; }
   refresh();
 }
 app.whenReady().then(main).catch(() => app.quit());
 app.on('window-all-closed', () => { if (!tray || !settings.minimizeToTray) app.quit(); });
-app.on('before-quit', () => { quitting = true; monitor?.stop(); server?.close(); void rpc?.stop(); if (timer) clearTimeout(timer); });
+app.on('before-quit', event => {
+  quitting = true;
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  monitor?.stop(); runningMonitor?.stop();
+  if (timer) clearTimeout(timer);
+  if (monitorRetry) clearTimeout(monitorRetry);
+  void Promise.resolve(rpc?.stop()).catch(() => {}).finally(() => { shutdownComplete = true; app.quit(); });
+});

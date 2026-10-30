@@ -2,6 +2,7 @@ import { createConnection, type Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Activity } from '../core/types.js';
+import { validateImageReference } from '../core/image.js';
 
 /** The app ID identifies one Discord developer application, not the detected app. */
 export type DiscordStatus = 'stopped' | 'connecting' | 'connected' | 'disconnected';
@@ -30,16 +31,17 @@ function frame(op: number, value: unknown): Buffer {
 }
 
 function text(value: string, max = 128): string {
-  return Array.from(value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()).slice(0, max).join('');
+  return Array.from(value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim()).slice(0, max).join('');
 }
 
-/** Only supplied public text and registered asset keys can leave the process. */
+/** Only supplied public text and validated image references can leave the process. */
 export function toDiscordActivity(activity: Activity | null): Payload {
   if (!activity) return null;
   const application = text(activity.application);
   const details = text(activity.details);
   const published: Record<string, unknown> = {
-    details: text([application, details].filter(Boolean).join(' — ')),
+    name: application,
+    details,
     instance: false,
   };
   if (activity.state && text(activity.state)) published.state = text(activity.state);
@@ -47,8 +49,8 @@ export function toDiscordActivity(activity: Activity | null): Payload {
   if (activity.startedAt && Number.isFinite(activity.startedAt) && activity.startedAt > 0) {
     published.timestamps = { start: Math.floor(activity.startedAt / 1000) };
   }
-  // A Discord developer application must contain the named asset; never publish arbitrary URLs.
-  if (activity.imageKey && /^[A-Za-z0-9_-]{1,64}$/.test(activity.imageKey)) {
+  // An asset key must exist on the Discord application; URLs are fetched by Discord.
+  if (activity.imageKey && validateImageReference(activity.imageKey)) {
     published.assets = { large_image: activity.imageKey };
   }
   return published;
