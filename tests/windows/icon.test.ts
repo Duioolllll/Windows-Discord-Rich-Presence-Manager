@@ -58,6 +58,8 @@ describe('local process icon extraction', () => {
     expect(script).toContain('GetProcessById(101)');
     expect(script).toContain('$start -ne 1700000000000');
     expect(script).toContain('$proc.ProcessName -cne $expectedName');
+    expect(script).toContain('$graphics.DrawIcon($icon, [System.Drawing.Rectangle]::new(0,0,32,32))');
+    expect(script).not.toContain('$graphics.DrawIcon($icon, 0, 0, 32, 32)');
     expect(script).not.toContain('Editor');
     complete(mocks.children[0]);
     expect(await p1).toBe(`data:image/png;base64,${fixture}`);

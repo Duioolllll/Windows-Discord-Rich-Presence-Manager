@@ -49,7 +49,7 @@ try {
   $bitmap = New-Object System.Drawing.Bitmap 32,32
   $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
   $graphics.Clear([System.Drawing.Color]::Transparent)
-  $graphics.DrawIcon($icon, (New-Object System.Drawing.Rectangle 0,0,32,32))
+  $graphics.DrawIcon($icon, [System.Drawing.Rectangle]::new(0,0,32,32))
   $stream = New-Object System.IO.MemoryStream
   $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
   if ($stream.Length -gt ${MAX_PNG_BYTES}) { exit 0 }
